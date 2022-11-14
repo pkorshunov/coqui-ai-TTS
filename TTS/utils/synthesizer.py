@@ -171,16 +171,13 @@ class Synthesizer(object):
         wav = np.array(wav)
         self.tts_model.ap.save_wav(wav, path, self.output_sample_rate)
 
-    def tts(
+    def one_voice_transfer(
         self,
-        text: str = "",
-        speaker_name: str = "",
-        language_name: str = "",
-        speaker_wav=None,
-        style_wav=None,
-        style_text=None,
-        reference_wav=None,
-        reference_speaker_name=None,
+        ref_wav,
+        speaker_embedding,     
+        reference_speaker_embedding,
+        speaker_id=None,
+        reference_speaker_id=None,
     ) -> List[int]:
         """🐸 TTS magic. Run all the models and generate speech.
 
@@ -193,6 +190,77 @@ class Synthesizer(object):
             style_text ([type], optional): transcription of style_wav for Capacitron. Defaults to None.
             reference_wav ([type], optional): reference waveform for voice conversion. Defaults to None.
             reference_speaker_name ([type], optional): spekaer id of reference waveform. Defaults to None.
+            source_wav (Union[str, List[str]], optional): path to the source speaker wav(s). Used in voice conversion. Defaults to None.
+        Returns:
+            List[int]: [description]
+        """
+        
+        use_gl = self.vocoder_model is None
+        
+        outputs = transfer_voice(
+            model=self.tts_model,
+            CONFIG=self.tts_config,
+            use_cuda=self.use_cuda,
+            reference_wav=ref_wav,
+            speaker_id=speaker_id,
+            d_vector=speaker_embedding,
+            use_griffin_lim=use_gl,
+            reference_speaker_id=reference_speaker_id,
+            reference_d_vector=reference_speaker_embedding,
+        )
+        
+        waveform = outputs
+        if not use_gl:
+            mel_postnet_spec = outputs[0].detach().cpu().numpy()
+            # denormalize tts output based on tts audio config
+            mel_postnet_spec = self.tts_model.ap.denormalize(mel_postnet_spec.T).T
+            device_type = "cuda" if self.use_cuda else "cpu"
+            # renormalize spectrogram based on vocoder config
+            vocoder_input = self.vocoder_ap.normalize(mel_postnet_spec.T)
+            # compute scale factor for possible sample rate mismatch
+            scale_factor = [
+                1,
+                self.vocoder_config["audio"]["sample_rate"] / self.tts_model.ap.sample_rate,
+            ]
+            if scale_factor[1] != 1:
+                print(" > interpolating tts model output.")
+                vocoder_input = interpolate_vocoder_input(scale_factor, vocoder_input)
+            else:
+                vocoder_input = torch.tensor(vocoder_input).unsqueeze(0)  # pylint: disable=not-callable
+            # run vocoder model
+            # [1, T, C]
+            waveform = self.vocoder_model.inference(vocoder_input.to(device_type))
+        if self.use_cuda:
+            waveform = waveform.cpu()
+        if not use_gl:
+            waveform = waveform.numpy()        
+            
+        return waveform.squeeze()
+        
+    def tts(
+        self,
+        text: str = "",
+        speaker_name: str = "",
+        language_name: str = "",
+        speaker_wav=None,
+        style_wav=None,
+        style_text=None,
+        reference_wav=None,
+        reference_speaker_name=None,
+        source_wav=None,
+    ) -> List[int]:
+        """🐸 TTS magic. Run all the models and generate speech.
+
+        Args:
+            text (str): input text.
+            speaker_name (str, optional): spekaer id for multi-speaker models. Defaults to "".
+            language_name (str, optional): language id for multi-language models. Defaults to "".
+            speaker_wav (Union[str, List[str]], optional): path to the speaker wav. Defaults to None.
+            style_wav ([type], optional): style waveform for GST. Defaults to None.
+            style_text ([type], optional): transcription of style_wav for Capacitron. Defaults to None.
+            reference_wav ([type], optional): reference waveform for voice conversion. Defaults to None.
+            reference_speaker_name ([type], optional): spekaer id of reference waveform. Defaults to None.
+            source_wav (Union[str, List[str]], optional): path to the source speaker wav(s). Used in voice conversion. Defaults to None.
         Returns:
             List[int]: [description]
         """
@@ -330,50 +398,36 @@ class Synthesizer(object):
                         # get speaker idx from the speaker name
                         reference_speaker_id = self.tts_model.speaker_manager.name_to_id[reference_speaker_name]
                 else:
-                    reference_speaker_embedding = self.tts_model.speaker_manager.compute_embedding_from_clip(
-                        reference_wav
+                    # if we have more than one file for source speaker
+                    if source_wav is not None:
+                        reference_speaker_embedding = self.tts_model.speaker_manager.compute_embedding_from_clip(
+                        source_wav
                     )
-            outputs = transfer_voice(
-                model=self.tts_model,
-                CONFIG=self.tts_config,
-                use_cuda=self.use_cuda,
-                reference_wav=reference_wav,
-                speaker_id=speaker_id,
-                d_vector=speaker_embedding,
-                use_griffin_lim=use_gl,
-                reference_speaker_id=reference_speaker_id,
-                reference_d_vector=reference_speaker_embedding,
-            )
-            waveform = outputs
-            if not use_gl:
-                mel_postnet_spec = outputs[0].detach().cpu().numpy()
-                # denormalize tts output based on tts audio config
-                mel_postnet_spec = self.tts_model.ap.denormalize(mel_postnet_spec.T).T
-                device_type = "cuda" if self.use_cuda else "cpu"
-                # renormalize spectrogram based on vocoder config
-                vocoder_input = self.vocoder_ap.normalize(mel_postnet_spec.T)
-                # compute scale factor for possible sample rate mismatch
-                scale_factor = [
-                    1,
-                    self.vocoder_config["audio"]["sample_rate"] / self.tts_model.ap.sample_rate,
-                ]
-                if scale_factor[1] != 1:
-                    print(" > interpolating tts model output.")
-                    vocoder_input = interpolate_vocoder_input(scale_factor, vocoder_input)
-                else:
-                    vocoder_input = torch.tensor(vocoder_input).unsqueeze(0)  # pylint: disable=not-callable
-                # run vocoder model
-                # [1, T, C]
-                waveform = self.vocoder_model.inference(vocoder_input.to(device_type))
-            if self.use_cuda:
-                waveform = waveform.cpu()
-            if not use_gl:
-                waveform = waveform.numpy()
-            wavs = waveform.squeeze()
+                    else:
+                        # if we have no other files for targt speaker, we use reference wav to compute embeddings
+                        reference_speaker_embedding = self.tts_model.speaker_manager.compute_embedding_from_clip(
+                            reference_wav
+                        )
+            if isinstance(reference_wav, str):
+                reference_wav = [reference_wav]
+            wavs = list()
+            for ref_wav in reference_wav:
+                waveform = self.one_voice_transfer(
+                    reference_wav=ref_wav,
+                    speaker_id=speaker_id,
+                    d_vector=speaker_embedding,
+                    reference_speaker_id=reference_speaker_id,
+                    reference_d_vector=reference_speaker_embedding,
+                )
+                wavs.append(waveform)
 
         # compute stats
         process_time = time.time() - start_time
-        audio_time = len(wavs) / self.tts_config.audio["sample_rate"]
+        if isinstance(wavs, list):
+            audio_lenth = sum([len(wav) for wav in wavs])
+        else:
+            audio_lenth = len(wavs)
+        audio_time = audio_lenth / self.tts_config.audio["sample_rate"]
         print(f" > Processing time: {process_time}")
         print(f" > Real-time factor: {process_time / audio_time}")
         return wavs
