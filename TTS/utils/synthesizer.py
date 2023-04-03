@@ -413,11 +413,11 @@ class Synthesizer(object):
             wavs = list()
             for ref_wav in reference_wav:
                 waveform = self.one_voice_transfer(
-                    reference_wav=ref_wav,
+                    ref_wav=ref_wav,
                     speaker_id=speaker_id,
-                    d_vector=speaker_embedding,
+                    speaker_embedding=speaker_embedding,
                     reference_speaker_id=reference_speaker_id,
-                    reference_d_vector=reference_speaker_embedding,
+                    reference_speaker_embedding=reference_speaker_embedding,
                 )
                 wavs.append(waveform)
 
