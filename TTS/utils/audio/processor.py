@@ -158,7 +158,6 @@ class AudioProcessor(object):
         verbose=True,
         **_,
     ):
-
         # setup class attributed
         self.sample_rate = sample_rate
         self.resample = resample
@@ -244,7 +243,7 @@ class AudioProcessor(object):
         if self.mel_fmax is not None:
             assert self.mel_fmax <= self.sample_rate // 2
         return librosa.filters.mel(
-            self.sample_rate, self.fft_size, n_mels=self.num_mels, fmin=self.mel_fmin, fmax=self.mel_fmax
+            sr=self.sample_rate, n_fft=self.fft_size, n_mels=self.num_mels, fmin=self.mel_fmin, fmax=self.mel_fmax
         )
 
     def _stft_parameters(
@@ -541,7 +540,10 @@ class AudioProcessor(object):
 
     def _griffin_lim(self, S):
         angles = np.exp(2j * np.pi * np.random.rand(*S.shape))
-        S_complex = np.abs(S).astype(np.complex)
+        try:
+            S_complex = np.abs(S).astype(np.complex)
+        except AttributeError:  # np.complex is deprecated since numpy 1.20.0
+            S_complex = np.abs(S).astype(complex)
         y = self._istft(S_complex * angles)
         if not np.isfinite(y).all():
             print(" [!] Waveform is not finite everywhere. Skipping the GL.")
@@ -570,7 +572,7 @@ class AudioProcessor(object):
             np.ndarray: Pitch.
 
         Examples:
-            >>> WAV_FILE = filename = librosa.util.example_audio_file()
+            >>> WAV_FILE = filename = librosa.example('vibeace')
             >>> from TTS.config import BaseAudioConfig
             >>> from TTS.utils.audio import AudioProcessor
             >>> conf = BaseAudioConfig(pitch_fmax=640, pitch_fmin=1)
@@ -712,7 +714,7 @@ class AudioProcessor(object):
         Args:
             filename (str): Path to the wav file.
         """
-        return librosa.get_duration(filename)
+        return librosa.get_duration(filename=filename)
 
     @staticmethod
     def mulaw_encode(wav: np.ndarray, qc: int) -> np.ndarray:
